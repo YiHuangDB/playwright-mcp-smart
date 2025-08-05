@@ -28,6 +28,8 @@ export class Response {
   private _includeSnapshot = false;
   private _includeTabs = false;
   private _tabSnapshot: TabSnapshot | undefined;
+  private static readonly TOKEN_LIMIT = 22000; // Set lower than Claude Code's 25k limit to ensure our truncation triggers first
+  private _paginationInfo: { needsPagination: boolean, totalPages?: number, currentPage?: number } | undefined;
 
   readonly toolName: string;
   readonly toolArgs: Record<string, any>;
@@ -80,11 +82,114 @@ export class Response {
     this._includeTabs = true;
   }
 
+  /**
+   * Check if content exceeds token limit and needs pagination
+   */
+  checkTokenLimit(content: string): { needsPagination: boolean, totalPages?: number, message?: string } {
+    // Rough token estimation: 1 token ≈ 4 characters for English text
+    const estimatedTokens = Math.ceil(content.length / 4);
+    
+    if (estimatedTokens > Response.TOKEN_LIMIT) {
+      const totalPages = Math.ceil(estimatedTokens / Response.TOKEN_LIMIT);
+      return {
+        needsPagination: true,
+        totalPages,
+        message: `⚠️ 返回内容过大 (约${estimatedTokens.toLocaleString()} tokens)，超出限制 (${Response.TOKEN_LIMIT.toLocaleString()} tokens)。需要分${totalPages}页获取。`
+      };
+    }
+    
+    return { needsPagination: false };
+  }
+
+  /**
+   * Set pagination information for the response
+   */
+  setPaginationInfo(needsPagination: boolean, totalPages?: number, currentPage?: number) {
+    this._paginationInfo = { needsPagination, totalPages, currentPage };
+  }
+
+  /**
+   * Add pagination warning to response
+   */
+  addPaginationWarning(totalPages: number, toolName: string, additionalParams: Record<string, any> = {}) {
+    const baseParams = { ...this.toolArgs, ...additionalParams };
+    delete baseParams.limit;
+    delete baseParams.offset;
+
+    let message = `⚠️ 返回内容过大，建议分${totalPages}页获取：\n\n`;
+    
+    for (let page = 1; page <= Math.min(totalPages, 5); page++) {
+      const offset = (page - 1) * (baseParams.limit || 100);
+      const pageParams = { 
+        ...baseParams, 
+        limit: baseParams.limit || 100, 
+        offset 
+      };
+      message += `页面${page}/${totalPages}: 使用参数 ${JSON.stringify(pageParams)}\n`;
+    }
+    
+    if (totalPages > 5) {
+      message += `... (还有${totalPages - 5}页)\n`;
+    }
+    
+    message += `\n或考虑使用更小的limit值来减少每页数据量。`;
+    
+    this.addResult(message);
+  }
+
+  /**
+   * Create a truncated snapshot when the full snapshot exceeds token limits
+   */
+  private _createTruncatedSnapshot(fullSnapshot: TabSnapshot, tokenCheck: { needsPagination: boolean, totalPages?: number, message?: string }): TabSnapshot {
+    const estimatedTokens = Math.ceil(fullSnapshot.ariaSnapshot.length / 4);
+    
+    // Calculate target length to fit within token limit
+    const targetLength = Response.TOKEN_LIMIT * 4; // Convert tokens back to characters
+    const truncationPoint = Math.floor(targetLength * 0.8); // Use 80% to leave room for warning message
+    
+    // Truncate the ARIA snapshot
+    const truncatedAriaSnapshot = fullSnapshot.ariaSnapshot.substring(0, truncationPoint);
+    
+    // Add truncation warning to the snapshot
+    const warningMessage = `
+
+⚠️ SNAPSHOT TRUNCATED: Page snapshot was too large (${estimatedTokens.toLocaleString()} tokens, limit: ${Response.TOKEN_LIMIT.toLocaleString()}).
+
+To get a complete snapshot, use browser_snapshot with filtering parameters:
+- {"maxElements": 200} - Limit number of elements
+- {"elementTypes": ["button", "textbox", "link", "heading"]} - Filter by element types  
+- {"skipLargeTexts": true} - Skip elements with large text content
+- Combine parameters for best results
+
+--- TRUNCATED SNAPSHOT ABOVE ---`;
+
+    return {
+      ...fullSnapshot,
+      ariaSnapshot: truncatedAriaSnapshot + warningMessage
+    };
+  }
+
   async finish() {
     // All the async snapshotting post-action is happening here.
     // Everything below should race against modal states.
-    if (this._includeSnapshot && this._context.currentTab())
-      this._tabSnapshot = await this._context.currentTabOrDie().captureSnapshot();
+    if (this._includeSnapshot && this._context.currentTab()) {
+      const tempSnapshot = await this._context.currentTabOrDie().captureSnapshot();
+      
+      // Apply token limiting to automatic snapshots
+      if (tempSnapshot?.ariaSnapshot) {
+        const tokenCheck = this.checkTokenLimit(tempSnapshot.ariaSnapshot);
+        
+        if (tokenCheck.needsPagination) {
+          // Create a truncated snapshot with guidance
+          const truncatedSnapshot = this._createTruncatedSnapshot(tempSnapshot, tokenCheck);
+          this._tabSnapshot = truncatedSnapshot;
+        } else {
+          this._tabSnapshot = tempSnapshot;
+        }
+      } else {
+        this._tabSnapshot = tempSnapshot;
+      }
+    }
     for (const tab of this._context.tabs())
       await tab.updateTitle();
   }
@@ -125,9 +230,31 @@ ${this._code.join('\n')}
       response.push('');
     }
 
+    // Final token limiting check before returning response
+    const fullResponse = response.join('\n');
+    const tokenCheck = this.checkTokenLimit(fullResponse);
+    
+    // Add debug logging
+    console.error(`[DEBUG] Response length: ${fullResponse.length} characters, estimated tokens: ${Math.ceil(fullResponse.length / 4)}, needs pagination: ${tokenCheck.needsPagination}`);
+    
+    if (tokenCheck.needsPagination) {
+      // If response is still too large, apply emergency truncation
+      const maxLength = Response.TOKEN_LIMIT * 4 * 0.9; // Use 90% of limit for safety
+      const truncated = fullResponse.substring(0, maxLength);
+      const warningMsg = `\n\n⚠️ RESPONSE TRUNCATED: Output exceeded ${Response.TOKEN_LIMIT.toLocaleString()} tokens and was automatically truncated. Use browser_snapshot with filtering parameters for complete results.`;
+      
+      console.error(`[DEBUG] Applying emergency truncation from ${fullResponse.length} to ${truncated.length + warningMsg.length} characters`);
+      
+      const content: (TextContent | ImageContent)[] = [
+        { type: 'text', text: truncated + warningMsg },
+      ];
+
+      return { content, isError: this._isError };
+    }
+
     // Main response part
     const content: (TextContent | ImageContent)[] = [
-      { type: 'text', text: response.join('\n') },
+      { type: 'text', text: fullResponse },
     ];
 
     // Image attachments.

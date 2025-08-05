@@ -20,18 +20,51 @@ import { defineTabTool, defineTool } from './tool.js';
 import * as javascript from '../javascript.js';
 import { generateLocator } from './utils.js';
 
+const snapshotSchema = z.object({
+  maxElements: z.number().optional().describe('Maximum number of elements to include in snapshot (default: 500)'),
+  elementTypes: z.array(z.string()).optional().describe('Filter elements by type (e.g., ["button", "textbox", "link"])'),
+  skipLargeTexts: z.boolean().optional().describe('Skip elements with very long text content (default: true)'),
+});
+
 const snapshot = defineTool({
   capability: 'core',
   schema: {
     name: 'browser_snapshot',
     title: 'Page snapshot',
     description: 'Capture accessibility snapshot of the current page, this is better than screenshot',
-    inputSchema: z.object({}),
+    inputSchema: snapshotSchema,
     type: 'readOnly',
   },
 
   handle: async (context, params, response) => {
     await context.ensureTab();
+    const tab = context.currentTabOrDie();
+    
+    // Check if this is a non-paginated request
+    if (!params.maxElements && !params.elementTypes) {
+      // Get a sample snapshot to estimate size
+      const tempSnapshot = await tab.captureSnapshot();
+      if (tempSnapshot?.ariaSnapshot) {
+        const tokenCheck = response.checkTokenLimit(tempSnapshot.ariaSnapshot);
+        
+        if (tokenCheck.needsPagination) {
+          const message = `⚠️ 页面快照内容过大 (约${Math.ceil(tempSnapshot.ariaSnapshot.length / 4).toLocaleString()} tokens)，超出限制 (24,000 tokens)。\n\n建议使用以下参数来减少快照大小：\n\n` +
+            `1. 限制元素数量: {"maxElements": 200}\n` +
+            `2. 过滤元素类型: {"elementTypes": ["button", "textbox", "link", "heading"]}\n` +
+            `3. 跳过大文本: {"skipLargeTexts": true}\n` +
+            `4. 组合使用: {"maxElements": 300, "elementTypes": ["button", "textbox"], "skipLargeTexts": true}`;
+          
+          response.addResult(message);
+          return;
+        }
+      }
+    }
+    
+    // Store parameters for potential snapshot filtering
+    if (params.maxElements || params.elementTypes || params.skipLargeTexts) {
+      (response as any)._snapshotParams = params;
+    }
+    
     response.setIncludeSnapshot();
   },
 });

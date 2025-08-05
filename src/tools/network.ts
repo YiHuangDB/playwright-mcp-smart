@@ -19,6 +19,11 @@ import { defineTabTool } from './tool.js';
 
 import type * as playwright from 'playwright';
 
+const networkSchema = z.object({
+  limit: z.number().optional().describe('Maximum number of requests to return (default: 100)'),
+  offset: z.number().optional().describe('Number of requests to skip for pagination (default: 0)'),
+});
+
 const requests = defineTabTool({
   capability: 'core',
 
@@ -26,13 +31,48 @@ const requests = defineTabTool({
     name: 'browser_network_requests',
     title: 'List network requests',
     description: 'Returns all network requests since loading the page',
-    inputSchema: z.object({}),
+    inputSchema: networkSchema,
     type: 'readOnly',
   },
 
   handle: async (tab, params, response) => {
     const requests = tab.requests();
-    [...requests.entries()].forEach(([req, res]) => response.addResult(renderRequest(req, res)));
+    const requestEntries = [...requests.entries()];
+    const limit = params.limit || 100;
+    const offset = params.offset || 0;
+    
+    // Check if we need pagination before processing
+    if (!params.limit && !params.offset) {
+      const allContent = requestEntries.map(([req, res]) => renderRequest(req, res)).join('\n');
+      const tokenCheck = response.checkTokenLimit(allContent);
+      
+      if (tokenCheck.needsPagination) {
+        response.addPaginationWarning(tokenCheck.totalPages!, 'browser_network_requests');
+        return;
+      }
+    }
+    
+    // Apply pagination
+    const paginatedEntries = requestEntries.slice(offset, offset + limit);
+    const hasMore = offset + limit < requestEntries.length;
+    
+    if (paginatedEntries.length === 0) {
+      response.addResult('No network requests found in the specified range.');
+      return;
+    }
+    
+    // Add pagination info
+    if (params.limit || params.offset) {
+      response.addResult(`Network requests ${offset + 1}-${offset + paginatedEntries.length} of ${requestEntries.length}:`);
+    }
+    
+    paginatedEntries.forEach(([req, res]) => response.addResult(renderRequest(req, res)));
+    
+    // Add next page hint if there are more results
+    if (hasMore) {
+      const nextOffset = offset + limit;
+      response.addResult(`\n📄 More results available. Next page: {"limit": ${limit}, "offset": ${nextOffset}}`);
+    }
   },
 });
 
