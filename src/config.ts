@@ -69,6 +69,7 @@ const defaultConfig: FullConfig = {
   },
   server: {},
   saveTrace: false,
+  capabilities: ['core', 'core-tabs', 'core-install', 'vision', 'pdf'],
 };
 
 type BrowserUserConfig = NonNullable<Config['browser']>;
