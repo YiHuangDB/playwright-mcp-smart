@@ -61,6 +61,7 @@ export class ClaudeDelegate implements LLMDelegate {
   async makeApiCall(conversation: LLMConversation): Promise<LLMToolCall[]> {
     // Convert generic messages to Claude format
     const claudeMessages: Anthropic.Messages.MessageParam[] = [];
+    let pendingToolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
 
     for (const message of conversation.messages) {
       if (message.role === 'user') {
@@ -96,27 +97,47 @@ export class ClaudeDelegate implements LLMDelegate {
           role: 'assistant',
           content
         });
+        
+        // Reset pending tool results after assistant message with tool calls
+        if (message.toolCalls && message.toolCalls.length > 0) {
+          pendingToolResults = [];
+        }
       } else if (message.role === 'tool') {
-        // Tool results are added differently - we need to find if there's already a user message with tool results
-        const lastMessage = claudeMessages[claudeMessages.length - 1];
+        // Collect tool results
         const toolResult: Anthropic.Messages.ToolResultBlockParam = {
           type: 'tool_result',
           tool_use_id: message.toolCallId,
           content: message.content,
           is_error: message.isError,
         };
-
-        if (lastMessage && lastMessage.role === 'user' && Array.isArray(lastMessage.content)) {
-          // Add to existing tool results message
-          (lastMessage.content as Anthropic.Messages.ToolResultBlockParam[]).push(toolResult);
-        } else {
-          // Create new tool results message
-          claudeMessages.push({
-            role: 'user',
-            content: [toolResult]
-          });
+        
+        pendingToolResults.push(toolResult);
+        
+        // Check if we need to flush tool results
+        // We flush when we've collected all results for the previous assistant's tool calls
+        const lastAssistantMessage = [...conversation.messages].reverse().find(m => m.role === 'assistant');
+        if (lastAssistantMessage && lastAssistantMessage.toolCalls) {
+          const allToolCallIds = lastAssistantMessage.toolCalls.map(tc => tc.id);
+          const collectedIds = pendingToolResults.map(tr => tr.tool_use_id);
+          
+          // If we have all the tool results for the last assistant message, add them
+          if (allToolCallIds.every(id => collectedIds.includes(id))) {
+            claudeMessages.push({
+              role: 'user',
+              content: [...pendingToolResults]
+            });
+            pendingToolResults = [];
+          }
         }
       }
+    }
+    
+    // Flush any remaining tool results
+    if (pendingToolResults.length > 0) {
+      claudeMessages.push({
+        role: 'user',
+        content: pendingToolResults
+      });
     }
 
     // Convert generic tools to Claude format
