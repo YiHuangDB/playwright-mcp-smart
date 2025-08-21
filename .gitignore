@@ -8,3 +8,22 @@ playwright-report/
 .DS_Store
 .env
 sessions/
+
+# Claude Code configuration and cache
+.claude/
+
+# Playwright browser profile and cache
+playwright-profile/
+
+# OS generated files
+Thumbs.db
+*.log
+
+# IDE files
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
