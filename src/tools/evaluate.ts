@@ -57,7 +57,33 @@ const evaluate = defineTabTool({
       const jsonResult = JSON.stringify(result, null, 2) || 'undefined';
       const maxLength = params.maxLength || 10000;
       
-      // Check if result is too large
+      // Check token limit first (more conservative check)
+      const tokenCheck = response.checkTokenLimit(jsonResult);
+      if (tokenCheck.needsPagination) {
+        if (params.returnSummary) {
+          const summary = {
+            type: typeof result,
+            length: jsonResult.length,
+            estimatedTokens: Math.ceil(jsonResult.length / 3),
+            preview: jsonResult.slice(0, 1000),
+            truncated: true,
+            suggestion: 'Use maxLength parameter or modify JavaScript to return smaller dataset'
+          };
+          response.addResult(JSON.stringify(summary, null, 2));
+          return;
+        } else {
+          const message = `⚠️ JavaScript execution result too large (~${Math.ceil(jsonResult.length / 3).toLocaleString()} tokens), exceeds limit (${20000} tokens).\n\nRecommended solutions:\n\n` +
+            `1. Limit length: {"maxLength": ${Math.floor(maxLength / 2)}}\n` +
+            `2. Return summary: {"returnSummary": true}\n` +
+            `3. Modify JavaScript code to return smaller dataset\n\n` +
+            `Result preview (first 1000 characters):\n${jsonResult.slice(0, 1000)}...`;
+          
+          response.addResult(message);
+          return;
+        }
+      }
+      
+      // Check if result exceeds maxLength parameter
       if (jsonResult.length > maxLength) {
         if (params.returnSummary) {
           const truncated = jsonResult.slice(0, maxLength);
@@ -71,18 +97,11 @@ const evaluate = defineTabTool({
           response.addResult(JSON.stringify(summary, null, 2));
           return;
         } else {
-          // Check token limit
-          const tokenCheck = response.checkTokenLimit(jsonResult);
-          if (tokenCheck.needsPagination) {
-            const message = `⚠️ JavaScript执行结果过大 (约${Math.ceil(jsonResult.length / 4).toLocaleString()} tokens)，超出限制 (24,000 tokens)。\n\n建议使用以下参数：\n\n` +
-              `1. 限制长度: {"maxLength": ${maxLength}}\n` +
-              `2. 返回摘要: {"returnSummary": true}\n` +
-              `3. 修改JavaScript代码返回更小的数据集\n\n` +
-              `结果预览 (前1000字符)：\n${jsonResult.slice(0, 1000)}...`;
-            
-            response.addResult(message);
-            return;
-          }
+          // Truncate to maxLength with warning
+          const truncated = jsonResult.slice(0, maxLength);
+          const message = `⚠️ Result truncated to ${maxLength} characters (original: ${jsonResult.length} characters).\n\n${truncated}...`;
+          response.addResult(message);
+          return;
         }
       }
       

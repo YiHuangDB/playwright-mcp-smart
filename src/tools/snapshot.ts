@@ -48,11 +48,11 @@ const snapshot = defineTool({
         const tokenCheck = response.checkTokenLimit(tempSnapshot.ariaSnapshot);
         
         if (tokenCheck.needsPagination) {
-          const message = `⚠️ 页面快照内容过大 (约${Math.ceil(tempSnapshot.ariaSnapshot.length / 4).toLocaleString()} tokens)，超出限制 (24,000 tokens)。\n\n建议使用以下参数来减少快照大小：\n\n` +
-            `1. 限制元素数量: {"maxElements": 200}\n` +
-            `2. 过滤元素类型: {"elementTypes": ["button", "textbox", "link", "heading"]}\n` +
-            `3. 跳过大文本: {"skipLargeTexts": true}\n` +
-            `4. 组合使用: {"maxElements": 300, "elementTypes": ["button", "textbox"], "skipLargeTexts": true}`;
+          const message = `⚠️ Page snapshot content too large (~${Math.ceil(tempSnapshot.ariaSnapshot.length / 3).toLocaleString()} tokens), exceeds limit (${20000} tokens).\n\nRecommended parameters to reduce snapshot size:\n\n` +
+            `1. Limit element count: {"maxElements": 200}\n` +
+            `2. Filter element types: {"elementTypes": ["button", "textbox", "link", "heading"]}\n` +
+            `3. Skip large texts: {"skipLargeTexts": true}\n` +
+            `4. Combine options: {"maxElements": 300, "elementTypes": ["button", "textbox"], "skipLargeTexts": true}`;
           
           response.addResult(message);
           return;

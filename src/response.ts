@@ -28,7 +28,7 @@ export class Response {
   private _includeSnapshot = false;
   private _includeTabs = false;
   private _tabSnapshot: TabSnapshot | undefined;
-  private static readonly TOKEN_LIMIT = 22000; // Set lower than Claude Code's 25k limit to ensure our truncation triggers first
+  private static readonly TOKEN_LIMIT = 20000; // Set significantly lower than Claude Code's 25k limit to ensure our truncation triggers first
   private _paginationInfo: { needsPagination: boolean, totalPages?: number, currentPage?: number } | undefined;
 
   readonly toolName: string;
@@ -86,15 +86,15 @@ export class Response {
    * Check if content exceeds token limit and needs pagination
    */
   checkTokenLimit(content: string): { needsPagination: boolean, totalPages?: number, message?: string } {
-    // Rough token estimation: 1 token ≈ 4 characters for English text
-    const estimatedTokens = Math.ceil(content.length / 4);
+    // Conservative token estimation: 1 token ≈ 3 characters (to account for complex tokens)
+    const estimatedTokens = Math.ceil(content.length / 3);
     
     if (estimatedTokens > Response.TOKEN_LIMIT) {
       const totalPages = Math.ceil(estimatedTokens / Response.TOKEN_LIMIT);
       return {
         needsPagination: true,
         totalPages,
-        message: `⚠️ 返回内容过大 (约${estimatedTokens.toLocaleString()} tokens)，超出限制 (${Response.TOKEN_LIMIT.toLocaleString()} tokens)。需要分${totalPages}页获取。`
+        message: `⚠️ Response content too large (~${estimatedTokens.toLocaleString()} tokens), exceeds limit (${Response.TOKEN_LIMIT.toLocaleString()} tokens). Needs ${totalPages} pages to retrieve.`
       };
     }
     
@@ -116,7 +116,7 @@ export class Response {
     delete baseParams.limit;
     delete baseParams.offset;
 
-    let message = `⚠️ 返回内容过大，建议分${totalPages}页获取：\n\n`;
+    let message = `⚠️ Response content too large, recommend getting ${totalPages} pages:\n\n`;
     
     for (let page = 1; page <= Math.min(totalPages, 5); page++) {
       const offset = (page - 1) * (baseParams.limit || 100);
@@ -125,14 +125,14 @@ export class Response {
         limit: baseParams.limit || 100, 
         offset 
       };
-      message += `页面${page}/${totalPages}: 使用参数 ${JSON.stringify(pageParams)}\n`;
+      message += `Page ${page}/${totalPages}: Use parameters ${JSON.stringify(pageParams)}\n`;
     }
     
     if (totalPages > 5) {
-      message += `... (还有${totalPages - 5}页)\n`;
+      message += `... (${totalPages - 5} more pages)\n`;
     }
     
-    message += `\n或考虑使用更小的limit值来减少每页数据量。`;
+    message += `\nOr consider using a smaller limit value to reduce data per page.`;
     
     this.addResult(message);
   }
@@ -141,11 +141,11 @@ export class Response {
    * Create a truncated snapshot when the full snapshot exceeds token limits
    */
   private _createTruncatedSnapshot(fullSnapshot: TabSnapshot, tokenCheck: { needsPagination: boolean, totalPages?: number, message?: string }): TabSnapshot {
-    const estimatedTokens = Math.ceil(fullSnapshot.ariaSnapshot.length / 4);
+    const estimatedTokens = Math.ceil(fullSnapshot.ariaSnapshot.length / 3);
     
-    // Calculate target length to fit within token limit
-    const targetLength = Response.TOKEN_LIMIT * 4; // Convert tokens back to characters
-    const truncationPoint = Math.floor(targetLength * 0.8); // Use 80% to leave room for warning message
+    // Calculate target length to fit within token limit (use conservative estimation)
+    const targetLength = Response.TOKEN_LIMIT * 3; // Convert tokens back to characters
+    const truncationPoint = Math.floor(targetLength * 0.75); // Use 75% to leave room for warning message
     
     // Truncate the ARIA snapshot
     const truncatedAriaSnapshot = fullSnapshot.ariaSnapshot.substring(0, truncationPoint);
@@ -235,13 +235,13 @@ ${this._code.join('\n')}
     const tokenCheck = this.checkTokenLimit(fullResponse);
     
     // Add debug logging
-    console.error(`[DEBUG] Response length: ${fullResponse.length} characters, estimated tokens: ${Math.ceil(fullResponse.length / 4)}, needs pagination: ${tokenCheck.needsPagination}`);
+    console.error(`[DEBUG] Response length: ${fullResponse.length} characters, estimated tokens: ${Math.ceil(fullResponse.length / 3)}, needs pagination: ${tokenCheck.needsPagination}`);
     
     if (tokenCheck.needsPagination) {
       // If response is still too large, apply emergency truncation
-      const maxLength = Response.TOKEN_LIMIT * 4 * 0.9; // Use 90% of limit for safety
+      const maxLength = Response.TOKEN_LIMIT * 3 * 0.85; // Use 85% of limit for safety with conservative estimation
       const truncated = fullResponse.substring(0, maxLength);
-      const warningMsg = `\n\n⚠️ RESPONSE TRUNCATED: Output exceeded ${Response.TOKEN_LIMIT.toLocaleString()} tokens and was automatically truncated. Use browser_snapshot with filtering parameters for complete results.`;
+      const warningMsg = `\n\n⚠️ RESPONSE TRUNCATED: Output exceeded ${Response.TOKEN_LIMIT.toLocaleString()} tokens and was automatically truncated. Use tool-specific pagination parameters for complete results.`;
       
       console.error(`[DEBUG] Applying emergency truncation from ${fullResponse.length} to ${truncated.length + warningMsg.length} characters`);
       
